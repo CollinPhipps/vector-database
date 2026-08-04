@@ -7,7 +7,9 @@ authors = [
     { name = "CollinPhipps" }
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "numpy>=2.5.1",
+]
 
 [project.scripts]
 vdb = "vdb:main"
