@@ -1,1 +1,2 @@
-from .store_v1 import VectorStore, Flat
+from .store import VectorStore
+from .ivf import IVF
