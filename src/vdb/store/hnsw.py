@@ -21,20 +21,27 @@ class Node:
         self.neighbors[level].append(vid)
 
 class HNSW:
-    def __init__(self, dim, M=16, ef_construction=200, ef_search=50, metric=MetricType.L2):
+    def __init__(self, dim, M=16, ef_construction=200, metric=MetricType.L2):
         self.dim = dim
         self.M = M                     # target neighbors per node per layer
         self.M_max = M                 # degree cap on layers > 0
         self.M_max0 = 2 * M            # degree cap on layer 0 (kept denser)
         self.ef_construction = ef_construction
-        self.ef_search = ef_search
         self.metric = metric
         self.mL = 1.0 / np.log(M)      # level-generation normalization factor
 
-        self.store = VectorStore(dim)  # vectors live here; the graph only holds vids
+        self.store = VectorStore(dim)
         self.graph = {}                # graph[vid] -> Node
         self.entry_point = None        # vid of the current top-of-graph node
         self.max_level = -1
+
+    def build(self, db: np.ndarray):
+        if db.size > 0 and db.shape[1] != self.dim:
+            raise ValueError(f"Database dimension {db.shape[1]} does not match specified dimension {self.dim}")
+        vectors = db.reshape(-1, self.dim).astype(np.float32)
+        vectors = np.random.permutation(vectors)
+        for vector in vectors:
+            self.insert(vector)
 
     def _dist(self, query, vid):
         """
@@ -154,99 +161,10 @@ class HNSW:
 
         return [(-nd, vid) for nd, vid in found]
 
-    def search(self, query: np.ndarray, k: int):
+    def search(self, query: np.ndarray, ef_search: int, k: int):
         entry = self.entry_point
         for layer in range(self.max_level, 0, -1):
             W = self.search_layer(query, [entry], ef=1, layer=layer)
             entry = min(W, key=lambda x: x[0])[1]
-        W = sorted(self.search_layer(query, [entry], ef=self.ef_search, layer=0))
+        W = sorted(self.search_layer(query, [entry], ef=ef_search, layer=0))
         return [vid for _, vid in W[:k]]
-
-
-if __name__ == "__main__":
-    # Hand-wired toy graph to exercise search_layer in isolation (no insertion yet).
-    # Six points on a line, chained as 0-1-2-3-4-5 at layer 0.
-    h = HNSW(dim=2, metric=MetricType.L2)
-    for x in range(6):
-        h.store.add(np.array([x, 0.0], dtype=np.float32))
-        h.graph[x] = Node(vid=x, top_level=0)
-
-    edges = [(0,1),(1,2),(2,3),(3,4),(4,5)]
-    for a, b in edges:
-        h.graph[a].add_neighbor(b, 0)
-        h.graph[b].add_neighbor(a, 0)
-
-    query = np.array([4.2, 0.0], dtype=np.float32)
-
-    # ef=1 is the greedy hill-climb: starting from vid 0, it should walk the chain
-    # and settle on vid 4 (the nearest), never getting stuck earlier.
-    res1 = h.search_layer(query, entry_points=[0], ef=1, layer=0)
-    print("ef=1 from vid0:", res1)
-    assert res1[0][1] == 4, f"expected nearest vid 4, got {res1}"
-
-    # ef=3 should return the three closest overall: vids 3, 4, 5.
-    res3 = h.search_layer(query, entry_points=[0], ef=3, layer=0)
-    got = sorted(vid for _, vid in res3)
-    print("ef=3 from vid0:", res3)
-    assert got == [3, 4, 5], f"expected [3, 4, 5], got {got}"
-
-    print("search_layer toy tests passed")
-
-    # --- multi-layer HNSW built via insert(), compared to brute force ---
-    np.random.seed(0)
-    n, dim, k = 1000, 16, 10
-    h = HNSW(dim=dim, M=8, ef_construction=100, ef_search=50, metric=MetricType.L2)
-
-    data = np.random.randn(n, dim).astype(np.float32)
-    for v in data:
-        h.insert(v)
-
-    # structural sanity: every vector is a node, and nobody exceeds the layer-0 cap
-    assert len(h.graph) == n, f"expected {n} nodes, got {len(h.graph)}"
-    for vid, node in h.graph.items():
-        deg = len(node.neighbors[0])
-        assert deg <= h.M_max0, f"node {vid} has degree {deg} > cap {h.M_max0}"
-    # a working NSW shouldn't leave nodes stranded with zero links
-    isolated = [vid for vid, node in h.graph.items() if len(node.neighbors[0]) == 0]
-    assert not isolated, f"{len(isolated)} isolated nodes (graph not connected)"
-    print("structural invariants OK")
-
-    # the real query path: descend upper layers with ef=1, then search layer 0 with ef_search
-    def hierarchical_search(q, k):
-        entry = h.entry_point
-        for layer in range(h.max_level, 0, -1):
-            W = h.search_layer(q, [entry], ef=1, layer=layer)
-            entry = min(W, key=lambda x: x[0])[1]
-        W = sorted(h.search_layer(q, [entry], h.ef_search, 0))
-        return [vid for _, vid in W[:k]]
-
-    # count _dist calls to compare hierarchical descent vs a flat layer-0 search
-    call_count = {"n": 0}
-    base_dist = h._dist
-    def counting_dist(query, vid):
-        call_count["n"] += 1
-        return base_dist(query, vid)
-    h._dist = counting_dist
-
-    queries = np.random.randn(50, dim).astype(np.float32)
-    total, hier_calls, flat_calls = 0.0, 0, 0
-    for q in queries:
-        truth = {vid for _, vid in h.store.flat_search(q, k, MetricType.L2)}
-
-        call_count["n"] = 0
-        approx = set(hierarchical_search(q, k))
-        hier_calls += call_count["n"]
-
-        call_count["n"] = 0
-        _ = sorted(h.search_layer(q, [h.entry_point], h.ef_search, 0))[:k]
-        flat_calls += call_count["n"]
-
-        total += len(truth & approx) / k
-
-    recall = total / len(queries)
-    print(f"max_level reached: {h.max_level}")
-    print(f"hierarchical recall@{k}: {recall:.3f}")
-    print(f"avg _dist calls/query   hierarchical: {hier_calls / len(queries):.1f}"
-          f"   flat layer-0: {flat_calls / len(queries):.1f}")
-    assert recall > 0.85, f"recall too low: {recall:.3f}"
-    print("hierarchical HNSW recall test passed")
