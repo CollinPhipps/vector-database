@@ -10,3 +10,6 @@ wheels/
 .venv
 
 .claude
+
+# benchmark datasets — large binaries, not source
+*.hdf5

@@ -8,6 +8,9 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "faiss-cpu>=1.15.0",
+    "h5py>=3.16.0",
+    "matplotlib>=3.11.1",
     "numpy>=2.5.1",
 ]
 
@@ -17,3 +20,8 @@ vdb = "vdb:main"
 [build-system]
 requires = ["uv_build>=0.12.0,<0.13.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
