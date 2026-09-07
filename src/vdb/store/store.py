@@ -1,8 +1,10 @@
+from typing import Any
+
 import numpy as np
 from ..utils.metrics import MetricType, Metrics
 
 class VectorStore:
-    def __init__(self, dim: int, db: np.ndarray = None):
+    def __init__(self, dim: int, db: np.ndarray | None = None):
         self.dim = dim
         self.id_to_row = {}
         self.row_to_id = {}
@@ -23,7 +25,7 @@ class VectorStore:
                 self.metadata[i] = {}
             self._next_id = db.shape[0]
 
-    def add(self, vector: np.ndarray, metadata: dict[any, any]=None):
+    def add(self, vector: np.ndarray, metadata: dict[Any, Any] | None = None):
         """
         adds a vector to the vector store using vstack. updates internal mappings
         of row to vid.
@@ -48,6 +50,46 @@ class VectorStore:
         self.row_to_id[row] = vid
         self.metadata[vid] = metadata or {}
         return vid
+
+    def add_bulk(self, vectors: np.ndarray, metadata: list[dict[Any, Any]] | None = None):
+        """
+        adds vectors in bulk, along with metadata.
+
+        Parameters:
+        - vectors: np.ndarray
+            The nxdim matrix of vectors to add
+        -metadata
+            A list of metadata, where metadata[i] corresponds to vectors[i]
+        """
+        if vectors.size > 0 and vectors.shape[1] != self.dim:
+            raise ValueError(f"Database dimension {vectors.shape[1]} does not match specified dimension {self.dim}")
+
+        vectors = vectors.reshape(-1, self.dim).astype(np.float32) if vectors.size > 0 else np.empty((0, self.dim), dtype=np.float32)
+        num_new_vectors = vectors.shape[0]
+        
+        if num_new_vectors == 0:
+            return []
+
+        starting_row = self._vectors.shape[0]
+        self._vectors = np.vstack([self._vectors, vectors])
+        assigned_vids = []
+
+        for i in range(num_new_vectors):
+            vid = self._next_id
+            row = starting_row + i
+
+            self.id_to_row[vid] = row
+            self.row_to_id[row] = vid
+            
+            if metadata and i < len(metadata):
+                self.metadata[vid] = metadata[i]
+            else:
+                self.metadata[vid] = {}
+
+            assigned_vids.append(vid)
+            self._next_id += 1
+
+        return assigned_vids
 
     def get(self, vid):
         """
@@ -96,7 +138,7 @@ class VectorStore:
         
         raise ValueError(f"Unknown vector id: {vid}")
 
-    def update_metadata(self, vid: int, key: any, value: any = None):
+    def update_metadata(self, vid: int, key: Any, value: Any = None):
         """
         Updates the metadata for the given vid. Pass a dict as `key` to merge
         multiple entries at once, or a single key/value pair to set one entry.
@@ -142,20 +184,3 @@ class VectorStore:
 
     def valid_vid(self, vid: int):
         return vid in self.id_to_row
-
-if __name__ == "__main__":
-    # Example usage
-    db = VectorStore(dim=3)
-    db.add(np.array([1, 2, 3]))
-    db.add(np.array([4, 5, 6]))
-    db.add(np.array([7, 8, 9]))
-
-    query_vector = np.array([1, 0, 0])
-    results = db.flat_search(query_vector, k=2, metric=MetricType.COSINE)
-    print("Search Results (Cosine Similarity):", results)
-
-    results = db.flat_search(query_vector, k=2, metric=MetricType.L2)
-    print("Search Results (L2 Distance):", results)
-
-    results = db.flat_search(query_vector, k=2, metric=MetricType.DOT)
-    print("Search Results (Dot Product):", results)
